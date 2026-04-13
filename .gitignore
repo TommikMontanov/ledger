@@ -3,8 +3,15 @@ __pycache__/
 .env
 venv/
 env/
-# Игнорируем рабочие папки, чтобы на GitHub не летели чужие данные
-Oborotka/
-ActSverka/
-FinHelp/
-MaterialReport/
+
+# Игнорируем только временные файлы пользователей и сгенерированные отчеты,
+# чтобы код (.py) и файлы-шаблоны загрузились на GitHub!
+Oborotka/temp_*.xlsx
+ActSverka/temp_*.xlsx
+ActSverka/temp_*.csv
+FinHelp/temp_*.xlsx
+MaterialReport/temp_*.xlsx
+*Акт_Сверка*.xlsx
+*ФинПомощь*.xlsx
+*Материальный_отчет*.xlsx
+*Сводка*.xlsx
