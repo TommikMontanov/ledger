@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.env
+venv/
+env/
+# Игнорируем рабочие папки, чтобы на GitHub не летели чужие данные
+Oborotka/
+ActSverka/
+FinHelp/
+MaterialReport/
