@@ -81,14 +81,16 @@ code_kb = ReplyKeyboardMarkup(keyboard=[
 # ==========================================
 @dp.message(F.text == "📈 Сводка по счетам 4010")
 async def start_svodka_4010(message: Message, state: FSMContext):
-    await state.update_data(svodka_files={})
+    # Теперь храним файлы просто списком
+    await state.update_data(svodka_files_list=[])
     await message.answer(
         "Вы в разделе Сводка 4010.\n"
-        "Отправьте мне 3 файла (.xlsx):\n"
-        "1. Исходник (Сводка по счетам - 4010)\n"
-        "2. Общую сводку (Сводка)\n"
-        "3. Реестр (Реестр - 4010)\n\n"
-        "Как загрузите все три файла, нажмите '✅ Готово'.",
+        "Отправьте мне любые 3 файла (.xlsx):\n"
+        "• Исходник\n"
+        "• Общую сводку\n"
+        "• Реестр\n\n"
+        "Порядок и названия файлов значения не имеют. "
+        "Как загрузите все три, нажмите '✅ Готово'.",
         reply_markup=files_kb
     )
     await state.set_state(BotStates.wait_svodka_files)
@@ -100,43 +102,29 @@ async def receive_svodka_files(message: Message, state: FSMContext):
         await message.answer("Нужны только .xlsx файлы!")
         return
 
-    file_name = message.document.file_name.lower()
     path = os.path.join("Svodka4010", f"temp_{message.document.file_id}.xlsx")
     await bot.download(message.document, destination=path)
 
     data = await state.get_data()
-    svodka_files = data.get('svodka_files', {})
+    files_list = data.get('svodka_files_list', [])
+    files_list.append(path)
 
-    # Распределяем файлы по их названиям
-    if "реестр" in file_name:
-        svodka_files['registry'] = path
-        await message.answer(f"📥 Реестр загружен: `{message.document.file_name}`", parse_mode="Markdown")
-    elif "счета" in file_name or "исход" in file_name:
-        svodka_files['source'] = path
-        await message.answer(f"📥 Исходник загружен: `{message.document.file_name}`", parse_mode="Markdown")
-    elif "сводка" in file_name:
-        svodka_files['summary'] = path
-        await message.answer(f"📥 Общая сводка загружена: `{message.document.file_name}`", parse_mode="Markdown")
-    else:
-        await message.answer(
-            "⚠️ Не удалось определить тип файла по названию. Убедитесь, что в названии есть слова 'Сводка', 'Счетам' или 'Реестр'.")
-        os.remove(path)
-        return
+    await state.update_data(svodka_files_list=files_list)
 
-    await state.update_data(svodka_files=svodka_files)
+    count = len(files_list)
+    await message.answer(f"📥 Файл №{count} загружен: `{message.document.file_name}`", parse_mode="Markdown")
+
+    if count == 3:
+        await message.answer("Отлично! Все 3 файла получены. Нажмите '✅ Готово'.")
 
 
 @dp.message(BotStates.wait_svodka_files, F.text == "✅ Готово")
 async def svodka_files_done(message: Message, state: FSMContext):
     data = await state.get_data()
-    files = data.get('svodka_files', {})
+    files_list = data.get('svodka_files_list', [])
 
-    if len(files) < 3:
-        missing = []
-        if 'source' not in files: missing.append("Исходник")
-        if 'summary' not in files: missing.append("Общую сводку")
-        if 'registry' not in files: missing.append("Реестр")
-        await message.answer(f"Вы загрузили не все файлы! Не хватает: {', '.join(missing)}")
+    if len(files_list) != 3:
+        await message.answer(f"Нужно загрузить ровно 3 файла. Сейчас загружено: {len(files_list)}")
         return
 
     await message.answer("Введите номер месяца, с которого начать (например, 04 для Апреля):", reply_markup=cancel_kb)
@@ -149,7 +137,7 @@ async def svodka_get_month(message: Message, state: FSMContext):
         month_idx = int(message.text.strip()) - 1
         if not (0 <= month_idx <= 11): raise ValueError
     except:
-        await message.answer("Пожалуйста, введите корректное число от 01 до 12.")
+        await message.answer("Пожалуйста, введите число от 1 до 12.")
         return
 
     await state.update_data(sv_month=month_idx)
@@ -159,28 +147,38 @@ async def svodka_get_month(message: Message, state: FSMContext):
 
 @dp.message(BotStates.wait_svodka_saldo, F.text.in_({"да", "нет"}))
 async def svodka_get_saldo(message: Message, state: FSMContext):
-    is_transferred = False if message.text == "нет" else True
+    is_transferred = (message.text == "да")
     data = await state.get_data()
 
-    await message.answer("⚙️ Анализирую данные и пересчитываю сальдо (это может занять время)...", reply_markup=main_kb)
+    await message.answer("⚙️ Запускаю умную классификацию и расчет... Это может занять до минуты.",
+                         reply_markup=main_kb)
 
+    # Вызываем новую функцию, передавая СПИСОК путей
     success, result = await asyncio.to_thread(
         generate_svodka_4010,
-        data['svodka_files'],
+        data['svodka_files_list'],
         data['sv_month'],
         is_transferred
     )
 
     # Удаляем временные файлы
-    for f_path in data['svodka_files'].values():
-        if os.path.exists(f_path): os.remove(f_path)
+    for f_path in data['svodka_files_list']:
+        if os.path.exists(f_path):
+            try:
+                os.remove(f_path)
+            except:
+                pass
 
     if success:
         await message.answer_document(FSInputFile(result))
-        os.remove(result)
-        await message.answer("✅ Сводка по 4010 успешно сформирована!")
+        try:
+            os.remove(result)
+        except:
+            pass
+        await message.answer("✅ Сводка успешно сформирована!")
     else:
-        await message.answer(result)
+        # Если возникла ошибка в логике классификации, выводим её пользователю
+        await message.answer(f"❌ Ошибка при обработке:\n{result}")
 
     await state.clear()
 
