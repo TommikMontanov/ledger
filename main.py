@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, FSInputFile
@@ -7,20 +8,23 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-# Создаем папки
-os.makedirs("Oborotka", exist_ok=True)
-os.makedirs("ActSverka", exist_ok=True)
-os.makedirs("FinHelp", exist_ok=True)
-os.makedirs("MaterialReport", exist_ok=True)
-os.makedirs("Svodka4010", exist_ok=True)  # НОВАЯ ПАПКА
-
+# --- ИМПОРТЫ ТВОИХ МОДУЛЕЙ ---
+# Убедись, что папки и файлы существуют
 from Oborotka.oborotka import process_oborotka_file
 from ActSverka.actsverka import update_master_oborotka, process_reconciliation_acts
 from FinHelp.finhelp import generate_finhelp_acts
 from MaterialReport.material_logic import generate_material_report
-from Svodka.svodka_logic import generate_svodka_4010  # ИМПОРТ 4010
+from Svodka.svodka_logic import generate_svodka_4010  # Твоя новая функция
 
-bot = Bot(token=os.getenv('BOT_TOKEN'))
+# Создаем необходимые папки
+for folder in ["Oborotka", "ActSverka", "FinHelp", "MaterialReport", "Svodka4010"]:
+    os.makedirs(folder, exist_ok=True)
+
+# Инициализация бота
+TOKEN = os.getenv('BOT_TOKEN')
+if not TOKEN:
+    print("❌ ОШИБКА: Переменная окружения BOT_TOKEN не установлена!")
+bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 
@@ -28,6 +32,7 @@ dp = Dispatcher()
 # СОСТОЯНИЯ (FSM)
 # ==========================================
 class BotStates(StatesGroup):
+    # Состояния для других модулей
     wait_ob_files = State()
     wait_ob_month = State()
     wait_act_csv = State()
@@ -36,7 +41,7 @@ class BotStates(StatesGroup):
     wait_finhelp_ob = State()
     wait_material_file = State()
 
-    # НОВЫЕ СОСТОЯНИЯ ДЛЯ СВОДКИ 4010
+    # Состояния для Сводки 4010
     wait_svodka_files = State()
     wait_svodka_month = State()
     wait_svodka_saldo = State()
@@ -47,51 +52,59 @@ class BotStates(StatesGroup):
 # ==========================================
 main_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="📊 Оборотка"), KeyboardButton(text="📑 Акт сверки")],
-    [KeyboardButton(text="📈 Сводка по счетам 4010"), KeyboardButton(text="💰 Фин. помощь")],  # Изменено название кнопки
+    [KeyboardButton(text="📈 Сводка по счетам 4010"), KeyboardButton(text="💰 Фин. помощь")],
     [KeyboardButton(text="📦 Материальный отчет")]
 ], resize_keyboard=True)
 
-# Клавиатура для сальдо
+files_kb = ReplyKeyboardMarkup(keyboard=[
+    [KeyboardButton(text="✅ Готово"), KeyboardButton(text="❌ Отмена")]
+], resize_keyboard=True)
+
 saldo_kb = ReplyKeyboardMarkup(keyboard=[
     [KeyboardButton(text="да"), KeyboardButton(text="нет")],
     [KeyboardButton(text="❌ Отмена")]
 ], resize_keyboard=True)
 
-# ... (остальные клавиатуры остаются без изменений: act_kb, files_kb, cancel_kb, code_kb)
-act_kb = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text="⚙️ Сделать Акт"), KeyboardButton(text="📂 Обновить базу")],
-    [KeyboardButton(text="🔙 Назад")]
-], resize_keyboard=True)
-files_kb = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text="✅ Готово"), KeyboardButton(text="❌ Отмена")]
-], resize_keyboard=True)
 cancel_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отмена")]], resize_keyboard=True)
-code_kb = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text="4010"), KeyboardButton(text="6010")],
-    [KeyboardButton(text="❌ Отмена")]
-], resize_keyboard=True)
-
-
-# ... (Остальные хендлеры: cmd_start, cancel_action, start_ob, start_act, start_finhelp, start_material_report - ОСТАЮТСЯ КАК ЕСТЬ)
-# ВСТАВЬ ИХ СЮДА ИЗ ПРОШЛОГО КОДА
 
 
 # ==========================================
-# РАЗДЕЛ: СВОДКА 4010
+# ОБЩИЕ ХЕНДЛЕРЫ
+# ==========================================
+@dp.message(CommandStart())
+async def cmd_start(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Привет! Я бухгалтерский помощник. Выберите нужный раздел:", reply_markup=main_kb)
+
+
+@dp.message(F.text == "❌ Отмена")
+async def cancel_action(message: Message, state: FSMContext):
+    data = await state.get_data()
+    # Удаляем временные файлы, если они были
+    files = data.get('svodka_files_list', [])
+    for f in files:
+        if os.path.exists(f): os.remove(f)
+
+    await state.clear()
+    await message.answer("Действие отменено.", reply_markup=main_kb)
+
+
+# ==========================================
+# РАЗДЕЛ: СВОДКА 4010 (ОБНОВЛЕННЫЙ)
 # ==========================================
 @dp.message(F.text == "📈 Сводка по счетам 4010")
 async def start_svodka_4010(message: Message, state: FSMContext):
-    # Теперь храним файлы просто списком
     await state.update_data(svodka_files_list=[])
     await message.answer(
-        "Вы в разделе Сводка 4010.\n"
-        "Отправьте мне любые 3 файла (.xlsx):\n"
-        "• Исходник\n"
-        "• Общую сводку\n"
-        "• Реестр\n\n"
-        "Порядок и названия файлов значения не имеют. "
-        "Как загрузите все три, нажмите '✅ Готово'.",
-        reply_markup=files_kb
+        "📊 **Раздел Сводка 4010**\n\n"
+        "Отправьте мне **3 файла** (.xlsx):\n"
+        "1. Исходник (Сводка по счетам)\n"
+        "2. Общую сводку\n"
+        "3. Реестр\n\n"
+        "Названия файлов не важны, я распознаю их по содержанию.\n"
+        "После загрузки нажмите '✅ Готово'.",
+        reply_markup=files_kb,
+        parse_mode="Markdown"
     )
     await state.set_state(BotStates.wait_svodka_files)
 
@@ -99,49 +112,46 @@ async def start_svodka_4010(message: Message, state: FSMContext):
 @dp.message(BotStates.wait_svodka_files, F.document)
 async def receive_svodka_files(message: Message, state: FSMContext):
     if not message.document.file_name.endswith('.xlsx'):
-        await message.answer("Нужны только .xlsx файлы!")
+        await message.answer("⚠️ Ошибка: принимаются только файлы формата .xlsx")
         return
 
-    path = os.path.join("Svodka4010", f"temp_{message.document.file_id}.xlsx")
+    # Сохраняем файл во временную папку
+    file_id = message.document.file_id
+    path = os.path.join("Svodka4010", f"temp_{file_id}.xlsx")
     await bot.download(message.document, destination=path)
 
     data = await state.get_data()
     files_list = data.get('svodka_files_list', [])
     files_list.append(path)
-
     await state.update_data(svodka_files_list=files_list)
 
-    count = len(files_list)
-    await message.answer(f"📥 Файл №{count} загружен: `{message.document.file_name}`", parse_mode="Markdown")
-
-    if count == 3:
-        await message.answer("Отлично! Все 3 файла получены. Нажмите '✅ Готово'.")
+    await message.answer(f"📥 Файл №{len(files_list)} получен: `{message.document.file_name}`", parse_mode="Markdown")
 
 
 @dp.message(BotStates.wait_svodka_files, F.text == "✅ Готово")
 async def svodka_files_done(message: Message, state: FSMContext):
     data = await state.get_data()
-    files_list = data.get('svodka_files_list', [])
+    files = data.get('svodka_files_list', [])
 
-    if len(files_list) != 3:
-        await message.answer(f"Нужно загрузить ровно 3 файла. Сейчас загружено: {len(files_list)}")
+    if len(files) != 3:
+        await message.answer(
+            f"⚠️ Вы загрузили {len(files)} файла(ов), а нужно ровно 3. Продолжайте загрузку или нажмите 'Отмена'.")
         return
 
-    await message.answer("Введите номер месяца, с которого начать (например, 04 для Апреля):", reply_markup=cancel_kb)
+    await message.answer("Введите номер месяца, с которого начинается отчет (например, 1 — Январь, 4 — Апрель):",
+                         reply_markup=cancel_kb)
     await state.set_state(BotStates.wait_svodka_month)
 
 
 @dp.message(BotStates.wait_svodka_month)
 async def svodka_get_month(message: Message, state: FSMContext):
-    try:
-        month_idx = int(message.text.strip()) - 1
-        if not (0 <= month_idx <= 11): raise ValueError
-    except:
-        await message.answer("Пожалуйста, введите число от 1 до 12.")
+    month_text = message.text.strip()
+    if not month_text.isdigit() or not (1 <= int(month_text) <= 12):
+        await message.answer("🔢 Пожалуйста, введите число от 1 до 12.")
         return
 
-    await state.update_data(sv_month=month_idx)
-    await message.answer("Вы переносили сальдо в исходном файле в столбцы C и D?", reply_markup=saldo_kb)
+    await state.update_data(sv_month=int(month_text) - 1)
+    await message.answer("Вы уже переносили сальдо вручную в столбцы C и D исходника?", reply_markup=saldo_kb)
     await state.set_state(BotStates.wait_svodka_saldo)
 
 
@@ -150,10 +160,9 @@ async def svodka_get_saldo(message: Message, state: FSMContext):
     is_transferred = (message.text == "да")
     data = await state.get_data()
 
-    await message.answer("⚙️ Запускаю умную классификацию и расчет... Это может занять до минуты.",
-                         reply_markup=main_kb)
+    await message.answer("⚙️ Начинаю магию классификации и расчет... Это займет немного времени.", reply_markup=main_kb)
 
-    # Вызываем новую функцию, передавая СПИСОК путей
+    # Выполняем тяжелую функцию в отдельном потоке, чтобы бот не завис
     success, result = await asyncio.to_thread(
         generate_svodka_4010,
         data['svodka_files_list'],
@@ -163,31 +172,25 @@ async def svodka_get_saldo(message: Message, state: FSMContext):
 
     # Удаляем временные файлы
     for f_path in data['svodka_files_list']:
-        if os.path.exists(f_path):
-            try:
-                os.remove(f_path)
-            except:
-                pass
+        if os.path.exists(f_path): os.remove(f_path)
 
     if success:
-        await message.answer_document(FSInputFile(result))
-        try:
-            os.remove(result)
-        except:
-            pass
-        await message.answer("✅ Сводка успешно сформирована!")
+        await message.answer_document(
+            FSInputFile(result),
+            caption="✅ Сводка 4010 готова!"
+        )
+        if os.path.exists(result): os.remove(result)
     else:
-        # Если возникла ошибка в логике классификации, выводим её пользователю
-        await message.answer(f"❌ Ошибка при обработке:\n{result}")
+        await message.answer(f"❌ Произошла ошибка:\n{result}")
 
     await state.clear()
 
 
 # ==========================================
-# ЗАПУСК СЕРВЕРА (ДЛЯ RENDER)
+# ЗАПУСК СЕРВЕРА (ДЛЯ RENDER / KEEP-ALIVE)
 # ==========================================
 async def handle(request):
-    return web.Response(text="Бот жив и работает!")
+    return web.Response(text="Bot is running!")
 
 
 async def web_server():
@@ -201,9 +204,9 @@ async def web_server():
 
 
 async def main():
-    print("Запускаю веб-сервер для Render...")
-    await web_server()
-    print("Бот успешно запущен!")
+    # Запуск веб-сервера параллельно с ботом
+    asyncio.create_task(web_server())
+    print("🚀 Бот и Веб-сервер запущены...")
     await dp.start_polling(bot)
 
 
@@ -211,4 +214,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("Бот остановлен.")
+        print("⭕ Бот остановлен.")
